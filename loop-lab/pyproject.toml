@@ -1,0 +1,19 @@
+[project]
+name = "translation-agent-lab"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "json-repair>=0.61,<1",
+    "litellm",
+    "rapidfuzz>=3.0",
+    "tenacity>=8.2",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0", "ruff>=0.12"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
