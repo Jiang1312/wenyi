@@ -1,0 +1,26 @@
+language:
+  source: auto
+  target: zh
+
+translation:
+  reasoning_effort: high
+  max_chars_per_batch: 1800
+  max_chars_per_segment: 1200
+  context_segments: 6
+
+llm:
+  provider: openai_compatible
+  api_key: ""
+  base_url: https://api.openai.com/v1
+  model: ""
+  request_max_retries: 4
+
+runner:
+  agent_loop:
+    max_rounds: 12
+    max_tool_calls: 20
+    max_retries: 1
+
+paths:
+  state_dir: state
+  output_dir: output

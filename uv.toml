@@ -1,0 +1,3 @@
+# Keep uv's cache inside the workspace so project commands work in the
+# Codex sandbox without requiring access to the user-level cache directory.
+cache-dir = ".uv-cache"

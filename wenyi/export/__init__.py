@@ -1,0 +1,4 @@
+"""回填组装：把译文写回 EPUB / 纯文本，并生成 QA 报告。"""
+from .writer import assemble
+
+__all__ = ["assemble"]
