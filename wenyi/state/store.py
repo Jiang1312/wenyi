@@ -11,6 +11,9 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
 
+from ..consistency import ConsistencyRecord, normalize_source
+from ..consistency import update as update_consistency
+from ..consistency import write as write_consistency
 from ..schema.document import Chapter, Document
 
 STATUS_PENDING = "pending"
@@ -89,6 +92,10 @@ class StateStore:
     def trace_log_path(self) -> str:
         return os.path.join(self.logs_dir, "traces.jsonl")
 
+    @property
+    def consistency_path(self) -> str:
+        return os.path.join(self.run_dir, "consistency.json")
+
     def chapter_path(self, index: int) -> str:
         return os.path.join(self.chapters_dir, f"ch{index}.json")
 
@@ -142,6 +149,38 @@ class StateStore:
 
     def save_chapter(self, chapter: Chapter) -> None:
         self._write_json(self.chapter_path(chapter.index), chapter.to_dict())
+
+    def load_consistency(self) -> list[ConsistencyRecord]:
+        """读取一致性记录；旧 State 没有文件时返回空列表。"""
+
+        if not os.path.isfile(self.consistency_path):
+            return []
+        rows = self._read_json(self.consistency_path)
+        if not isinstance(rows, list):
+            raise TypeError("consistency.json 必须是 list")
+        return [
+            ConsistencyRecord(
+                source=row["source"],
+                target=row["target"],
+                occurrences=[tuple(item) for item in row.get("occurrences", [])],
+            )
+            for row in rows
+        ]
+
+    def save_consistency(self, records: list[ConsistencyRecord]) -> None:
+        """原子保存一致性记录。"""
+
+        self._write_json(
+            self.consistency_path,
+            [
+                {
+                    "source": record.source,
+                    "target": record.target,
+                    "occurrences": [list(item) for item in record.occurrences],
+                }
+                for record in records
+            ],
+        )
 
     def stage_document(
         self,
@@ -228,6 +267,8 @@ class StateStore:
         mode: str,
         expected_source_digest: str | None = None,
         trace_id: str | None = None,
+        consistency_updates: list[dict[str, Any]] | None = None,
+        consistency_writes: list[dict[str, Any]] | None = None,
     ) -> None:
         """校验源文未变化后提交一个 batch，再记录事件和进度。"""
 
@@ -243,6 +284,52 @@ class StateStore:
         actual_source_digest = digest_segments(batch)
         if expected_source_digest is not None and expected_source_digest != actual_source_digest:
             raise ValueError("提交 batch 的源文已变化")
+
+        consistency_records = self.load_consistency()
+        consistency_log: dict[str, list[dict[str, Any]]] = {
+            "writes": [],
+            "updates": [],
+        }
+        for change in consistency_updates or []:
+            source = change["source"]
+            target = change["target"]
+            record = next(
+                (
+                    item
+                    for item in consistency_records
+                    if normalize_source(item.source) == normalize_source(source)
+                ),
+                None,
+            )
+            before = len(record.occurrences) if record is not None else 0
+            update_consistency(
+                consistency_records,
+                source,
+                target,
+                [tuple(item) for item in change["occurrences"]],
+            )
+            after = len(record.occurrences) if record is not None else before
+            if after > before:
+                consistency_log["updates"].append(
+                    {
+                        "source": source,
+                        "target": target,
+                        "added_occurrences": after - before,
+                    }
+                )
+        for change in consistency_writes or []:
+            source = change["source"]
+            target = change["target"]
+            write_consistency(
+                consistency_records,
+                source,
+                target,
+                [tuple(item) for item in change["occurrences"]],
+            )
+            consistency_log["writes"].append(
+                {"source": source, "target": target}
+            )
+
         for segment, target in zip(batch, targets):
             segment.target = target
         self.save_chapter(chapter)
@@ -257,19 +344,23 @@ class StateStore:
             record["status"] = STATUS_DONE if completed == len(segments) else STATUS_PENDING
             break
         self.save_manifest(manifest)
+        if consistency_updates or consistency_writes:
+            self.save_consistency(consistency_records)
         target_digest = hashlib.sha256("\n".join(targets).encode()).hexdigest()
-        self.log_event(
-            "batch_committed",
-            task_id=task_id,
-            chapter=chapter_index,
-            start_index=start_index,
-            count=len(targets),
-            mode=mode,
-            status="committed",
-            source_digest=actual_source_digest,
-            target_digest=target_digest,
-            trace_id=trace_id,
-        )
+        event_data: dict[str, Any] = {
+            "task_id": task_id,
+            "chapter": chapter_index,
+            "start_index": start_index,
+            "count": len(targets),
+            "mode": mode,
+            "status": "committed",
+            "source_digest": actual_source_digest,
+            "target_digest": target_digest,
+            "trace_id": trace_id,
+        }
+        if consistency_log["writes"] or consistency_log["updates"]:
+            event_data["consistency"] = consistency_log
+        self.log_event("batch_committed", **event_data)
 
 
 RunStore = StateStore

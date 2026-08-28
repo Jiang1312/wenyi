@@ -22,9 +22,16 @@ def test_save_draft_replaces_full_draft_and_submit_returns_a_copy():
 
     assert saved.output is None
     assert saved.message == "草稿已保存，共 3 段"
-    assert submitted.output == ["译文一", "译文二", "译文三"]
-    submitted.output[0] = "外部修改"
-    assert toolbox.submit_translation().output == ["译文一", "译文二", "译文三"]
+    assert submitted.output == {
+        "targets": ["译文一", "译文二", "译文三"],
+        "consistency_candidates": [],
+    }
+    submitted.output["targets"][0] = "外部修改"
+    assert toolbox.submit_translation().output["targets"] == [
+        "译文一",
+        "译文二",
+        "译文三",
+    ]
 
 
 def test_save_draft_can_update_one_item_with_one_based_index():
@@ -35,7 +42,7 @@ def test_save_draft_can_update_one_item_with_one_based_index():
     submitted = toolbox.submit_translation()
 
     assert result.message == "草稿第 2 项已更新"
-    assert submitted.output == ["译文一", "修改后的译文二", "译文三"]
+    assert submitted.output["targets"] == ["译文一", "修改后的译文二", "译文三"]
 
 
 def test_draft_and_submit_reject_invalid_states():
@@ -65,4 +72,70 @@ def test_toolbox_exposes_only_draft_and_submit_tools():
 
     names = [item["function"]["name"] for item in toolbox.definitions]
 
-    assert names == ["save_draft", "submit_translation"]
+    assert names == ["save_draft", "record_consistency", "submit_translation"]
+
+
+def test_record_consistency_collects_new_pair_and_rejects_existing_source():
+    task_input = TranslationTaskInput(
+        sources=["A performative example", "Another constative example"],
+        source_lang="en",
+        target_lang="zh",
+        consistency=[{"source": "performative", "target": "述行性"}],
+    )
+    toolbox = TranslationToolBox(task_input)
+
+    candidate = toolbox.record_consistency(
+        candidates=[{"source": "constative", "target": "述谓性"}]
+    )
+    assert candidate.message == "已暂存 1 条 consistency candidate"
+    with pytest.raises(ValueError, match="已存在"):
+        toolbox.record_consistency(
+            candidates=[{"source": "performative", "target": "表演性"}]
+        )
+    with pytest.raises(ValueError, match="多个不同译法"):
+        toolbox.record_consistency(
+            candidates=[{"source": "constative", "target": "断言性"}]
+        )
+
+
+def test_record_consistency_accepts_multiple_candidates_atomically():
+    task_input = TranslationTaskInput(
+        sources=["A constative", "A performative"],
+        source_lang="en",
+        target_lang="zh",
+    )
+    toolbox = TranslationToolBox(task_input)
+
+    result = toolbox.record_consistency(
+        candidates=[
+            {"source": "constative", "target": "述谓性"},
+            {"source": "performative", "target": "述行性"},
+        ]
+    )
+    assert result.message == "已暂存 2 条 consistency candidate"
+    toolbox.save_draft(["译文一", "译文二"])
+    assert toolbox.submit_translation().output["consistency_candidates"] == [
+        {"source": "constative", "target": "述谓性"},
+        {"source": "performative", "target": "述行性"},
+    ]
+
+
+def test_record_consistency_rejects_an_invalid_batch_without_partial_candidates():
+    task_input = TranslationTaskInput(
+        sources=["A constative", "A performative"],
+        source_lang="en",
+        target_lang="zh",
+        consistency=[{"source": "performative", "target": "述行性"}],
+    )
+    toolbox = TranslationToolBox(task_input)
+
+    with pytest.raises(ValueError, match="已存在"):
+        toolbox.record_consistency(
+            candidates=[
+                {"source": "constative", "target": "述谓性"},
+                {"source": "performative", "target": "表演性"},
+            ]
+        )
+
+    toolbox.save_draft(["译文一", "译文二"])
+    assert toolbox.submit_translation().output["consistency_candidates"] == []

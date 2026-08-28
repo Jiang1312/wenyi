@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from typing import Any
 
 from ..schema.document import Segment
@@ -132,3 +132,25 @@ def read_state_data(
         "manifest": manifest,
         "batches": read_batches(state, chapter_index, max_chars),
     }
+
+
+def local_to_global_positions(
+    *,
+    chapter_index: int,
+    batch: Sequence[Segment],
+    local_positions: Iterable[int],
+) -> list[tuple[int, int]]:
+    """把 batch 内 1-based 位置转换为全局章节和 Segment 索引。"""
+
+    positions: list[tuple[int, int]] = []
+    for local_position in local_positions:
+        if isinstance(local_position, bool) or not isinstance(local_position, int):
+            raise TypeError("batch 内位置必须是整数")
+        if local_position < 1 or local_position > len(batch):
+            raise ValueError(
+                f"batch 内位置超出范围：必须在 1 到 {len(batch)} 之间"
+            )
+        position = (chapter_index, batch[local_position - 1].index)
+        if position not in positions:
+            positions.append(position)
+    return positions

@@ -1,12 +1,12 @@
 """翻译任务的数据契约和输出校验。
 
-职责：定义模型层需要的原文与语言信息，并校验提交的译文列表是否能够
+职责：定义模型层需要的原文、语言和一致性观察，并校验提交的译文列表是否能够
 与输入原文逐项对齐。本模块不读取 State，也不执行 LLM 或工具。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -17,6 +17,7 @@ class TranslationTaskInput:
     source_lang: str
     target_lang: str
     context: str = ""
+    consistency: list[dict[str, str]] = field(default_factory=list)
 
 
 def validate_translation_output(

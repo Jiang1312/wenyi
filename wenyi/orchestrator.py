@@ -11,9 +11,19 @@ from typing import Any
 from uuid import uuid4
 
 from .config import Config
+from .consistency import (
+    find_exact_source_positions,
+    match_exact,
+    match_vague,
+    normalize_source,
+)
 from .export import assemble
 from .ingest import load_document
-from .runner import read_context, read_state_data
+from .runner import (
+    local_to_global_positions,
+    read_context,
+    read_state_data,
+)
 from .state import StateStore, slugify, source_sha256
 from .state.store import digest_segments
 from .translation import TranslationTaskInput, TranslationWorkflow
@@ -182,6 +192,28 @@ class Orchestrator:
             if any(completed):
                 raise ValueError("State 中存在未完整对齐的 batch")
 
+            consistency_records = store.load_consistency()
+            exact_updates: list[dict[str, Any]] = []
+            for record, local_positions in match_exact(
+                consistency_records,
+                [segment.source for segment in batch],
+            ):
+                exact_updates.append(
+                    {
+                        "source": record.source,
+                        "target": record.target,
+                        "occurrences": local_to_global_positions(
+                            chapter_index=chapter_index,
+                            batch=batch,
+                            local_positions=local_positions,
+                        ),
+                    }
+                )
+            vague_hits = match_vague(
+                consistency_records,
+                [segment.source for segment in batch],
+            )
+
             task_input = TranslationTaskInput(
                 sources=[segment.source for segment in batch],
                 source_lang=source_lang,
@@ -192,6 +224,10 @@ class Orchestrator:
                     start_index,
                     self.config.translation.context_segments,
                 ),
+                consistency=[
+                    {"source": record.source, "target": record.target}
+                    for record in vague_hits
+                ],
             )
             task_id = f"translation-ch{chapter_index}-batch{batch_number}"
             trace_id = f"trace-{uuid4().hex}"
@@ -209,14 +245,55 @@ class Orchestrator:
                 task_output = self._translation_workflow().run(
                     task_input,
                     task_id=task_id,
+                    existing_consistency_sources={
+                        normalize_source(record.source)
+                        for record in consistency_records
+                    },
                     trace_writer=store.log_trace,
                     trace_id=trace_id,
                 )
                 if not task_output.is_success:
                     raise RuntimeError(task_output.error_message or "翻译任务失败")
-                if not isinstance(task_output.result, list):
-                    raise TypeError("翻译任务结果必须是 list")
-                targets = task_output.result
+                if isinstance(task_output.result, list):
+                    targets = task_output.result
+                    consistency_candidates: list[dict[str, str]] = []
+                elif isinstance(task_output.result, dict):
+                    targets = task_output.result.get("targets")
+                    consistency_candidates = task_output.result.get(
+                        "consistency_candidates", []
+                    )
+                    if not isinstance(consistency_candidates, list):
+                        raise TypeError("consistency_candidates 必须是 list")
+                else:
+                    raise TypeError("翻译任务结果必须是 list 或 dict")
+                if not isinstance(targets, list):
+                    raise TypeError("翻译任务结果的 targets 必须是 list")
+
+                consistency_writes: list[dict[str, Any]] = []
+                for candidate in consistency_candidates:
+                    if not isinstance(candidate, dict):
+                        raise TypeError("consistency candidate 必须是 dict")
+                    source = candidate.get("source")
+                    target = candidate.get("target")
+                    if not isinstance(source, str) or not isinstance(target, str):
+                        raise TypeError("consistency candidate 缺少 source 或 target")
+                    local_positions = find_exact_source_positions(
+                        source,
+                        [segment.source for segment in batch],
+                    )
+                    if not local_positions:
+                        raise ValueError("consistency candidate source 不存在于当前 batch")
+                    consistency_writes.append(
+                        {
+                            "source": source,
+                            "target": target,
+                            "occurrences": local_to_global_positions(
+                                chapter_index=chapter_index,
+                                batch=batch,
+                                local_positions=local_positions,
+                            ),
+                        }
+                    )
                 store.commit_batch(
                     task_id=task_id,
                     chapter_index=chapter_index,
@@ -225,6 +302,8 @@ class Orchestrator:
                     mode="agent_loop",
                     expected_source_digest=digest_segments(batch),
                     trace_id=trace_id,
+                    consistency_updates=exact_updates,
+                    consistency_writes=consistency_writes,
                 )
             except Exception as error:
                 store.log_event(

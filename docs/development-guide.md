@@ -18,7 +18,7 @@ ingest：解析、切分、创建 State
 State：保存原文、译文、进度和运行信息
    │
    │
-   ├── prepare / translate / terminology / review：具体任务
+   ├── prepare / translate / review：具体任务
    │
    ▼
 export：将 State 回填为最终文件
@@ -27,7 +27,7 @@ export：将 State 回填为最终文件
 具体任务和通用执行机制分离。
 
 - `runner` 负责通用的 LLM 执行模式，例如 Single Call 和 Agent Loop，并提供从 State 读取 batch 等外部输入的支持。
-- `translation`、`terminology`、`review` 等任务模块负责任务本身是什么。
+- `translation`、`review` 等任务模块负责任务本身是什么；`consistency` 是翻译和后续任务共享的基础能力。
 - `llm` 只负责统一的模型调用和 Provider 适配。
 
 顶层流程由 `Orchestrator` 控制，CLI 只负责解析命令行参数并调用它。典型命令如下：
@@ -131,7 +131,7 @@ OpenAI-compatible API / other provider
 
 `LLMClient` 不应知道：
 
-- 当前任务是 translation、terminology 还是 review；
+- 当前任务是 translation 还是 review；
 - State 的目录结构；
 - 具体 Tool 的业务含义；
 - 如何校验任务输出。
@@ -238,7 +238,7 @@ AgentLoopRunner 不应出现以下内容：
 
 定义 Runner 输入层所需的通用 schema。这里描述的是 Runner 的输入形状，不负责读取 State；读取 State 的逻辑属于 `state_reader.py`。
 
-### 1.4 具体任务：`prepare`、`translation`、`terminology`、`review`
+### 1.4 具体任务：`prepare`、`translation`、`review`
 
 具体任务模块是业务层。它们使用通用 LLMClient 和 Runner，但不能把业务逻辑下沉到 Runner 或 Provider。
 
@@ -260,8 +260,9 @@ task workflow
 
 - 定义一个 batch 的翻译输入；
 - 保存 source list、source language 和 target language；
+- 读取并展示当前 batch 相关的 consistency 译法；
 - 构造翻译 Prompt；
-- 定义 `save_draft`、`submit_translation` 等翻译工具；
+- 定义 `save_draft`、`record_consistency`、`submit_translation` 等翻译工具；
 - 校验译文 list 是否与 source list 等长且没有空元素；
 - 将通用 Runner 结果转换为译文 list。
 
@@ -285,9 +286,16 @@ TranslationTaskInput
               AgentLoopRunner
 ```
 
-#### `terminology`
+#### `consistency`
 
-待设计
+`consistency` 不是独立的 LLM 任务，而是由 Orchestrator 和 StateStore 使用的共享基础能力：
+
+- `match(..., mode="exact")` 找出当前 batch 中已有记录的全部出现位置；
+- `match(..., mode="vague")` 找出需要提供给模型的相关记录并去重；
+- `write()` 写入新的 source-target 记录；
+- `update()` 为已有完全一致记录追加出现位置。
+
+它不负责术语判断、知识记录或 review，也不直接写入 State。
 
 #### `review`
 
@@ -318,6 +326,7 @@ state/
     ├── chapters/
     │   ├── ch0.json
     │   └── ch1.json
+    ├── consistency.json
     ├── source/
     └── logs/
         ├── events.jsonl
@@ -328,7 +337,7 @@ state/
 
 State 级日志统一保存在 `logs/`：
 
-- `events.jsonl`：记录 ingest、translate、export 等阶段的生命周期事件；
+- `events.jsonl`：记录 ingest、translate、export 等阶段的生命周期事件；`batch_committed` 可包含成功的 consistency write/update 摘要；
 - `traces.jsonl`：记录 Agent Loop 中的模型响应、用户消息、Tool 调用和 Tool 结果。
 
 `store.log_event(event, **data)` 的扩展字段统一写入 `data` 对象。与 Agent Loop 关联的流程事件在 `data.trace_id` 中记录对应的 trace ID。Trace 本身则将 `trace_id`、`seq`、`round` 和 `kind` 作为顶层字段，用于重建一次任务的执行顺序。
@@ -437,6 +446,8 @@ wenyi/
 │   ├── agent_loop.py           # 通用 Agent Loop
 │   └── single_call.py          # Single Call Runner 位置和接口
 │
+├── consistency.py              # 一致性匹配、写入和位置更新
+│
 ├── translation/
 │   ├── __init__.py
 │   ├── task.py                 # 翻译任务输入和结果校验
@@ -457,7 +468,7 @@ wenyi/
     └── about.py                # EPUB 说明页
 ```
 
-新增 `terminology`、`review` 或其它任务时，应采用与 `translation` 相同的任务包结构，而不是把任务逻辑添加到 `runner` 或 `llm` 中。
+新增 `review` 或其它任务时，应采用与 `translation` 相同的任务包结构，而不是把任务逻辑添加到 `runner` 或 `llm` 中。共享的 consistency 能力保持在 `wenyi/consistency.py`，不创建独立任务包。
 
 ### 2.2 脚本和模块的编写规范
 
@@ -507,7 +518,7 @@ llm
 - 任务所需语言或规则；
 - 任务专用上下文。
 
-不要为了方便把章节索引和 State 路径塞入 `TranslationTaskInput`、术语任务输入或审校任务输入。
+不要为了方便把章节索引和 State 路径塞入 `TranslationTaskInput` 或审校任务输入。
 
 #### Tool 的业务逻辑放在任务模块
 
@@ -519,8 +530,8 @@ llm
 runner/tools.py
     ToolBox / ToolResult 协议
 
-translation/tools.py
-    save_draft / submit_translation
+    translation/tools.py
+    save_draft / record_consistency / submit_translation
 ```
 
 Tool 可以维护一次任务执行期间的临时状态，但不应绕过 Orchestrator 直接写入 State。
@@ -541,7 +552,7 @@ StateStore.commit_batch()
 
 #### 新增任务优先新增完整垂直切片
 
-新增 terminology 或 review 时，建议一次完成以下最小闭环：
+新增 review 或其它 LLM 任务时，建议一次完成以下最小闭环：
 
 ```text
 TaskInput
