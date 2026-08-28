@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
@@ -34,6 +35,7 @@ class LLMConfig(BaseModel):
     model: str = ""
     timeout: int = Field(default=600, gt=0)
     request_max_retries: int = Field(default=4, ge=0, le=10)
+    options: dict[str, Any] = Field(default_factory=dict)
     tiers: dict[str, dict] = Field(default_factory=dict)
 
 
@@ -78,7 +80,7 @@ class Config(BaseModel):
             "  context_segments: 6\n"
             "llm:\n  provider: openai_compatible\n  api_key: \"\"\n"
             "  base_url: https://api.openai.com/v1\n  model: \"\"\n"
-            "  request_max_retries: 4\n"
+            "  request_max_retries: 4\n  options: {}\n"
             "runner:\n  agent_loop:\n    max_rounds: 12\n"
             "    max_tool_calls: 20\n    max_retries: 1\n"
             "paths:\n  state_dir: state\n  output_dir: output\n",

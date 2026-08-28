@@ -11,7 +11,7 @@ from collections.abc import Callable
 from typing import Any, cast
 
 from ..config import Config
-from ..llm import LLMClient, LLMProvider, RetryConfig
+from ..llm import LLMClient, RetryConfig
 from ..runner import AgentLoopRunner, TaskInput, TaskOutput
 from .prompt import build_messages
 from .task import TranslationTaskInput, validate_translation_output
@@ -35,13 +35,14 @@ class TranslationWorkflow:
                 raise ValueError("llm.model 不能为空")
             client = LLMClient(
                 api_key=config.llm.api_key,
-                provider=LLMProvider(config.llm.provider),
+                provider=config.llm.provider,
                 api_base=config.llm.base_url,
                 model=config.llm.model,
                 reasoning_effort=config.translation.reasoning_effort,
                 retry_config=RetryConfig(
                     max_retries=config.llm.request_max_retries
                 ),
+                options=config.llm.options,
             )
 
         runner = AgentLoopRunner(

@@ -1,5 +1,5 @@
-"""LLM ProviderClient 实现。"""
+"""Deprecated compatibility imports for the protocol client."""
 
-from .openai_compatible import OpenAICompatibleClient
+from .openai_compatible import OpenAICompatibleClient, OpenAICompletionClient
 
-__all__ = ["OpenAICompatibleClient"]
+__all__ = ["OpenAICompatibleClient", "OpenAICompletionClient"]

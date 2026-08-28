@@ -100,7 +100,7 @@ Runner / Task Workflow
 LLMClient
         │
         ▼
-ProviderClient
+OpenAICompletionClient + adapter
         │
         ▼
 OpenAI-compatible API / other provider
@@ -125,9 +125,9 @@ OpenAI-compatible API / other provider
 定义公开的 `LLMClient`：
 
 - 保存模型、Provider、base URL、reasoning effort 和重试配置；
-- 根据 Provider 创建具体 `ProviderClient`；
+- 根据 Provider 创建对应的协议客户端和 adapter；
 - 向 Runner 暴露统一的 `generate()` 接口；
-- 将调用转发给 ProviderClient。
+- 将调用转发给协议客户端。
 
 `LLMClient` 不应知道：
 
@@ -136,16 +136,21 @@ OpenAI-compatible API / other provider
 - 具体 Tool 的业务含义；
 - 如何校验任务输出。
 
-#### `wenyi/llm/providers/`
+#### `wenyi/llm/openai_completion.py`
 
-这里实现具体 Provider 的网络交互和格式转换。例如 `providers/openai_compatible.py` 负责：
+`OpenAICompletionClient` 是所有 OpenAI Chat Completions-compatible Provider 共用的协议客户端，负责：
 
-- 将公共 `Message` 转换为 OpenAI Chat Completions 格式；
-- 将 Tool 定义转换为 Provider 所需格式；
-- 解析 Provider 响应为 `LLMResponse`；
-- 处理 Provider 边界上的错误和重试。
+- 将公共 `Message` 转换为 Chat Completions 消息；
+- 将 Tool 定义转换为 function tool；
+- 组装模型、消息、工具和 Provider 参数；
+- 发起 SDK/API 调用并执行统一重试；
+- 解析公共响应结构为 `LLMResponse`。
 
-ProviderClient 不应反向导入具体任务模块，也不应直接修改 State。
+#### `wenyi/llm/adapters/`
+
+这里使用无状态函数模块描述 Provider 方言。`openai.py` 提供默认实现，`deepseek.py`、`glm.py` 和 `hunyuan.py` 只覆盖实际不同的消息、工具、请求参数或响应字段。
+
+Adapter 不保存连接状态，不读取 State，也不反向导入具体任务模块。
 
 #### `wenyi/llm/retry.py`
 
@@ -153,7 +158,7 @@ ProviderClient 不应反向导入具体任务模块，也不应直接修改 Stat
 
 #### `wenyi/llm/base.py`
 
-提供 ProviderClient 共享的基础接口和公共配置承载。新增 Provider 时优先复用该接口。
+提供 LLM 客户端共享的基础接口和公共配置承载。OpenAI-compatible Provider 复用 `OpenAICompletionClient`，方言差异通过 `llm/adapters/` 的函数接入。
 
 ### 1.3 `runner`：通用任务执行机制
 
@@ -270,7 +275,7 @@ task workflow
 
 - 从 State 读取章节；
 - 决定 `chapter_index`、`start_index`；
-- 直接调用 ProviderClient；
+- 直接调用 LLMClient；
 - 直接向 State 写入 target。
 
 当前翻译任务的内部关系是：
@@ -430,12 +435,16 @@ wenyi/
 ├── llm/
 │   ├── __init__.py             # LLM 公共接口导出
 │   ├── schema.py               # Message / LLMResponse / TokenUsage
-│   ├── base.py                 # ProviderClient 基础接口
+│   ├── base.py                 # LLM 客户端基础接口
 │   ├── llm_wrapper.py          # LLMClient
+│   ├── openai_completion.py    # OpenAICompletionClient
 │   ├── retry.py                # 通用重试
-│   └── providers/
-│       ├── __init__.py
-│       └── openai_compatible.py # OpenAI-compatible ProviderClient
+│   └── adapters/
+│       ├── __init__.py         # adapter 注册
+│       ├── openai.py             # 标准 Chat Completions 行为
+│       ├── deepseek.py         # DeepSeek 方言
+│       ├── glm.py              # GLM 方言
+│       └── hunyuan.py           # 混元方言
 │
 ├── runner/
 │   ├── __init__.py             # Runner 公共接口导出

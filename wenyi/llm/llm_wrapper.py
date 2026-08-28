@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from .adapters import get_adapter
 from .base import LLMClientBase
-from .providers.openai_compatible import OpenAICompatibleClient
+from .openai_completion import OpenAICompletionClient
 from .retry import RetryConfig
 from .schema import LLMProvider, LLMResponse, Message, ReasoningEffort
 
@@ -17,31 +18,35 @@ class LLMClient:
     def __init__(
         self,
         api_key: str,
-        provider: LLMProvider,
+        provider: LLMProvider | str,
         api_base: str,
         model: str,
         reasoning_effort: ReasoningEffort = ReasoningEffort.NONE,
         retry_config: RetryConfig | None = None,
+        options: dict[str, Any] | None = None,
     ) -> None:
         self.provider = provider
+        provider_key = provider.value if isinstance(provider, LLMProvider) else provider
         self.api_key = api_key
         self.api_base = api_base.rstrip("/")
         self.model = model
         self.reasoning_effort = reasoning_effort
         self.retry_config = retry_config or RetryConfig()
+        self.options = options or {}
 
-        if provider == LLMProvider.OPENAI_COMPATIBLE:
-            self._client: LLMClientBase | None = OpenAICompatibleClient(
-                api_key=api_key,
-                api_base=self.api_base,
-                model=model,
-                reasoning_effort=reasoning_effort.value,
-                retry_config=self.retry_config,
-            )
-        elif provider == LLMProvider.ANTHROPIC:
+        if provider_key == LLMProvider.ANTHROPIC.value:
             raise NotImplementedError("AnthropicClient 尚未接入")
-        else:
-            raise ValueError(f"Unsupported provider: {provider}")
+
+        get_adapter(provider_key)
+        self._client: LLMClientBase | None = OpenAICompletionClient(
+            provider=provider_key,
+            api_key=api_key,
+            api_base=self.api_base,
+            model=model,
+            reasoning_effort=reasoning_effort.value,
+            retry_config=self.retry_config,
+            options=self.options,
+        )
 
     @property
     def retry_callback(self) -> Callable[..., Any] | None:

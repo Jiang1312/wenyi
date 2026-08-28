@@ -11,7 +11,7 @@ def _response():
             SimpleNamespace(
                 message=SimpleNamespace(
                     content="你好",
-                    reasoning_details=[SimpleNamespace(text="先分析")],
+                    reasoning_content="先分析",
                     tool_calls=[
                         SimpleNamespace(
                             id="call-1",
@@ -60,6 +60,7 @@ def test_openai_compatible_client_converts_request_and_response():
     request = sdk_client.chat.completions.create.call_args.kwargs
     assert request["model"] == "test-model"
     assert request["reasoning_effort"] == "high"
+    assert "extra_body" not in request
     assert request["tools"][0]["type"] == "function"
     assert response.content == "你好"
     assert response.thinking == "先分析"
@@ -83,3 +84,26 @@ def test_openai_compatible_client_retries_api_request():
 
     assert response.content == "你好"
     assert sdk_client.chat.completions.create.call_count == 2
+
+
+def test_opencode_go_replays_reasoning_content():
+    provider = OpenAICompatibleClient(
+        api_key="test-key",
+        api_base="https://example.test/v1",
+        model="glm-5.3-flash",
+        reasoning_effort=ReasoningEffort.HIGH.value,
+        retry_config=RetryConfig(enabled=False),
+        client=Mock(),
+    )
+
+    messages = provider._convert_messages(
+        [Message(role="assistant", content="答案", thinking="先分析")]
+    )
+
+    assert messages == [
+        {
+            "role": "assistant",
+            "content": "答案",
+            "reasoning_content": "先分析",
+        }
+    ]

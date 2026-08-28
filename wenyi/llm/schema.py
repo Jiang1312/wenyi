@@ -13,15 +13,21 @@ class LLMProvider(str, Enum):
 
     ANTHROPIC = "anthropic"
     OPENAI_COMPATIBLE = "openai_compatible"
+    DEEPSEEK = "deepseek"
+    GLM = "glm"
+    HUNYUAN = "hunyuan"
 
 
 class ReasoningEffort(str, Enum):
     """LLM 客户端要求的思考能力。"""
 
     NONE = "none"
+    MINIMAL = "minimal"
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
+    XHIGH = "xhigh"
+    MAX = "max"
 
 
 class FunctionCall(BaseModel):

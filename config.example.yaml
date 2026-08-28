@@ -9,11 +9,12 @@ translation:
   context_segments: 6
 
 llm:
-  provider: openai_compatible
+  provider: ""
   api_key: ""
   base_url: https://api.openai.com/v1
   model: ""
   request_max_retries: 4
+  options: {}
 
 runner:
   agent_loop:

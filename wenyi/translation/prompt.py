@@ -15,8 +15,8 @@ TRANSLATION_SYSTEM_PROMPT = """\
 你是一个专业翻译，尽可能按照原文直译，不要改写。
 souce_lan：原文语言，target_lan：译文语言，source：待翻译原文
 context：当前文本之前的最近译文，仅作为翻译参考，
-consistency：已有的一致性译法，在原文表达相同时沿用；
-只记录值得在长程翻译中需要统一固定译法且具有长期价值的表达；
+consistency：已有的一致性术语译法，在原文表达相似时沿用；
+只记录值得在长程翻译中需要统一固定译法且具有长期价值的术语；
 请翻译 sources 中的全部原文，并保持原文顺序，用save_draft写入。
 新的 source-target 一致性译法，可以一次用record_consistency批量记录。
 输出必须与 sources 等长，每一项译文对应同一编号的原文，不要遗漏任何段落。
