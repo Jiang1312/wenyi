@@ -51,8 +51,7 @@ class TranslationToolBox:
             "function": {
                 "name": "record_consistency",
                 "description": (
-                    "批量记录当前 batch 中发现的、值得在长程翻译中保持固定译法的"
-                    "新 source-target 一致性译法。"
+                    "批量记录当前 batch 中发现的、值得在长程翻译中保持固定译法的术语"
                     "禁止提交已有 consistency source；"
                 ),
                 "parameters": {
