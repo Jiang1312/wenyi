@@ -6,10 +6,12 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Iterator, Sequence
 from typing import Any
 
 from ..schema.document import Segment
+from ..state.refs import GlobalSegmentIndex
 from ..state.store import StateStore
 
 
@@ -150,7 +152,46 @@ def local_to_global_positions(
             raise ValueError(
                 f"batch 内位置超出范围：必须在 1 到 {len(batch)} 之间"
             )
-        position = (chapter_index, batch[local_position - 1].index)
+        position = GlobalSegmentIndex(chapter_index, batch[local_position - 1].index)
         if position not in positions:
             positions.append(position)
     return positions
+
+
+def read_indexed_context(
+    state: StateStore,
+    indexes: Sequence[GlobalSegmentIndex],
+) -> str:
+    """按全局 chapter + segment index 读取原文、译文和相邻上下文。"""
+
+    blocks: list[str] = []
+    for index in indexes:
+        if not isinstance(index, GlobalSegmentIndex):
+            if isinstance(index, (list, tuple)) and len(index) == 2:
+                index = GlobalSegmentIndex(int(index[0]), int(index[1]))
+            else:
+                raise TypeError("全局 index 必须是 GlobalSegmentIndex")
+        chapter = state.load_chapter(index.chapter)
+        segments = chapter.text_segments
+        position = next(
+            (position for position, item in enumerate(segments) if item.index == index.segment),
+            None,
+        )
+        if position is None:
+            raise ValueError(
+                f"State 中不存在 Segment：chapter={index.chapter}, segment={index.segment}"
+            )
+        start = max(0, position - 1)
+        end = min(len(segments), position + 2)
+        context = []
+        for item in segments[start:end]:
+            context.append(
+                {
+                    "chapter": index.chapter,
+                    "segment": item.index,
+                    "source": item.source,
+                    "target": item.target or "",
+                }
+            )
+        blocks.append(json.dumps(context, ensure_ascii=False, indent=2))
+    return "\n\n".join(blocks)

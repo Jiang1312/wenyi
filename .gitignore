@@ -7,3 +7,5 @@ __pycache__/
 /state/
 output/
 config.yaml
+
+*.epub

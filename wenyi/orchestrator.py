@@ -19,9 +19,12 @@ from .consistency import (
 )
 from .export import assemble
 from .ingest import load_document
+from .memory import MemoryTaskInput, MemoryTaskOutput
+from .memory.workflow import MemoryWorkflow
 from .runner import (
     local_to_global_positions,
     read_context,
+    read_indexed_context,
     read_state_data,
 )
 from .state import StateStore, slugify, source_sha256
@@ -43,6 +46,7 @@ class Orchestrator:
     def __init__(self, config: Config, client: Any | None = None) -> None:
         self.config = config
         self.translation: TranslationWorkflow | None = None
+        self.memory: MemoryWorkflow | None = None
         self.client = client
 
     def _translation_workflow(self) -> TranslationWorkflow:
@@ -55,6 +59,14 @@ class Orchestrator:
             )
             self.client = self.translation.runner.client
         return self.translation
+
+    def _memory_workflow(self) -> MemoryWorkflow:
+        """延迟创建 memory workflow，并复用翻译使用的 LLM client。"""
+
+        if self.memory is None:
+            self.memory = MemoryWorkflow.from_config(self.config, client=self.client)
+            self.client = self.memory.runner.client
+        return self.memory
 
     def ingest(self, input_path: str | Path) -> StateStore:
         """解析原始文件并在总 State 目录下创建对应书籍目录。"""
@@ -257,13 +269,19 @@ class Orchestrator:
                 if isinstance(task_output.result, list):
                     targets = task_output.result
                     consistency_candidates: list[dict[str, str]] = []
+                    memory_observations: list[dict[str, Any]] = []
                 elif isinstance(task_output.result, dict):
                     targets = task_output.result.get("targets")
                     consistency_candidates = task_output.result.get(
                         "consistency_candidates", []
                     )
+                    memory_observations = task_output.result.get(
+                        "memory_observations", []
+                    )
                     if not isinstance(consistency_candidates, list):
                         raise TypeError("consistency_candidates 必须是 list")
+                    if not isinstance(memory_observations, list):
+                        raise TypeError("memory_observations 必须是 list")
                 else:
                     raise TypeError("翻译任务结果必须是 list 或 dict")
                 if not isinstance(targets, list):
@@ -294,6 +312,29 @@ class Orchestrator:
                             ),
                         }
                     )
+                calibrated_memory: list[dict[str, Any]] = []
+                for observation in memory_observations:
+                    if not isinstance(observation, dict):
+                        raise TypeError("memory observation 必须是 dict")
+                    content = observation.get("content")
+                    local_indexes = observation.get("indexes")
+                    evidence = observation.get("evidence", "")
+                    if not isinstance(content, str) or not content.strip():
+                        raise TypeError("memory observation 缺少 content")
+                    if not isinstance(local_indexes, list) or not local_indexes:
+                        raise TypeError("memory observation 缺少 indexes")
+                    global_indexes = local_to_global_positions(
+                        chapter_index=chapter_index,
+                        batch=batch,
+                        local_positions=local_indexes,
+                    )
+                    calibrated_memory.append(
+                        {
+                            "content": content,
+                            "indexes": global_indexes,
+                            "evidence": evidence,
+                        }
+                    )
                 store.commit_batch(
                     task_id=task_id,
                     chapter_index=chapter_index,
@@ -304,6 +345,7 @@ class Orchestrator:
                     trace_id=trace_id,
                     consistency_updates=exact_updates,
                     consistency_writes=consistency_writes,
+                    memory_observations=calibrated_memory,
                 )
             except Exception as error:
                 store.log_event(
@@ -329,3 +371,67 @@ class Orchestrator:
                 usage=task_output.usage,
             )
             start_index += len(batch)
+
+        self._run_memory_task(store, chapter_index)
+
+    def _run_memory_task(self, store: StateStore, chapter_index: int) -> None:
+        """在章节结束时整理 CURRENT；失败时保留 CURRENT 供下次重试。"""
+
+        current = store.load_memory_current()
+        if not current.strip():
+            return
+        task_input = MemoryTaskInput(
+            current=current,
+            catalog=store.list_memory_documents(),
+        )
+        task_id = f"memory-ch{chapter_index}"
+        trace_id = f"trace-{uuid4().hex}"
+        store.log_event(
+            "memory_task_started",
+            stage="memory",
+            task_id=task_id,
+            trace_id=trace_id,
+            chapter_index=chapter_index,
+        )
+        task_output = None
+        try:
+            task_output = self._memory_workflow().run(
+                task_input,
+                task_id=task_id,
+                document_reader=store.read_memory_document,
+                source_reader=lambda indexes: read_indexed_context(
+                    store,
+                    [
+                        (item["chapter"], item["segment"])
+                        for item in indexes
+                    ],
+                ),
+                trace_writer=store.log_trace,
+                trace_id=trace_id,
+            )
+            if not task_output.is_success:
+                raise RuntimeError(task_output.error_message or "memory 任务失败")
+            if not isinstance(task_output.result, MemoryTaskOutput):
+                raise TypeError("memory 任务结果类型错误")
+            committed_ids = store.commit_memory_task(task_output.result.writes)
+        except Exception as error:
+            store.log_event(
+                "memory_task_failed",
+                stage="memory",
+                task_id=task_id,
+                trace_id=trace_id,
+                chapter_index=chapter_index,
+                error=str(error),
+                error_type=type(error).__name__,
+                usage=task_output.usage if task_output is not None else {},
+            )
+            raise
+        store.log_event(
+            "memory_task_completed",
+            stage="memory",
+            task_id=task_id,
+            trace_id=trace_id,
+            chapter_index=chapter_index,
+            document_count=len(committed_ids),
+            usage=task_output.usage,
+        )

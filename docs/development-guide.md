@@ -302,6 +302,32 @@ TranslationTaskInput
 
 它不负责术语判断、知识记录或 review，也不直接写入 State。
 
+#### `memory`
+
+`memory` 是独立的具体任务包，负责把翻译阶段写入 CURRENT 的文本 observation
+整理为 topic documents。它不负责一致译法，也不把自身的工具逻辑下沉到 Runner。
+
+任务包内部关系如下：
+
+```text
+MemoryTaskInput
+        │
+        ├── build_messages()
+        ├── MemoryToolBox
+        └── MemoryWorkflow
+                    │
+                    ▼
+              AgentLoopRunner
+```
+
+Memory task 启动时接收 CURRENT 和 topic document catalog，通过工具渐进式读取已有
+document 及全局 `chapter + segment` 对应的原文、译文上下文。写入工具只在本次
+Agent Loop 内暂存完整 document 版本；任务成功后由 Orchestrator 调用 StateStore
+统一提交并清空 CURRENT。
+
+`GlobalSegmentIndex` 位于 `wenyi/state/refs.py`，是 State 中跨章节 Segment 的
+引用类型，由 consistency 和 memory 共用；它不是 `schema/document.py` 的文档数据模型。
+
 #### `review`
 
 待设计
@@ -332,6 +358,10 @@ state/
     │   ├── ch0.json
     │   └── ch1.json
     ├── consistency.json
+    ├── memory/
+    │   ├── current.md
+    │   └── documents/
+    │       └── <topic-document>.md
     ├── source/
     └── logs/
         ├── events.jsonl
@@ -415,6 +445,7 @@ wenyi/
 ├── state/
 │   ├── __init__.py
 │   ├── store.py                # StateStore 和 State 持久化
+│   ├── refs.py                 # GlobalSegmentIndex
 │   └── legacy_reader.py        # 旧 State 的读取兼容
 │
 ├── ingest/
@@ -456,6 +487,14 @@ wenyi/
 │   └── single_call.py          # Single Call Runner 位置和接口
 │
 ├── consistency.py              # 一致性匹配、写入和位置更新
+│
+├── memory/
+│   ├── __init__.py
+│   ├── schema.py               # TopicDocument 传输结构和 Markdown 序列化
+│   ├── task.py                 # MemoryTaskInput / MemoryTaskOutput
+│   ├── prompt.py               # Memory Prompt
+│   ├── tools.py                # Memory 专用工具
+│   └── workflow.py             # Memory task 到 Runner 的连接
 │
 ├── translation/
 │   ├── __init__.py

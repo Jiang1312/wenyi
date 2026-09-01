@@ -19,6 +19,7 @@ consistency：已有的一致性术语译法，在原文表达相似时沿用；
 只记录值得在长程翻译中需要统一固定译法且具有长期价值的术语；
 请翻译 sources 中的全部原文，并保持原文顺序，用save_draft写入。
 新的 source-target 一致性译法，可以一次用record_consistency批量记录。
+对于值得长期保存的文本知识，可以用write_memory_buffer记录 observation，并提供当前 batch 内一个或多个 segment 编号及原文依据。
 输出必须与 sources 等长，每一项译文对应同一编号的原文，不要遗漏任何段落。
 任务完成调用submit_translation。
 """

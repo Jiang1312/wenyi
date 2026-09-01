@@ -10,11 +10,14 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 
 from ..consistency import ConsistencyRecord, normalize_source
 from ..consistency import update as update_consistency
 from ..consistency import write as write_consistency
+from ..memory.schema import TopicDocument, parse_topic_document, render_topic_document
 from ..schema.document import Chapter, Document
+from .refs import GlobalSegmentIndex
 
 STATUS_PENDING = "pending"
 STATUS_DONE = "done"
@@ -51,6 +54,9 @@ class StateStore:
         self.chapters_dir = os.path.join(run_dir, "chapters")
         self.source_dir = os.path.join(run_dir, "source")
         self.logs_dir = os.path.join(run_dir, "logs")
+        self.memory_dir = os.path.join(run_dir, "memory")
+        self.memory_current_path = os.path.join(self.memory_dir, "current.md")
+        self.memory_documents_dir = os.path.join(self.memory_dir, "documents")
         if create:
             self.ensure_dirs()
 
@@ -95,6 +101,119 @@ class StateStore:
     @property
     def consistency_path(self) -> str:
         return os.path.join(self.run_dir, "consistency.json")
+
+    def _memory_document_path(self, document_id: str) -> str:
+        if (
+            not isinstance(document_id, str)
+            or not document_id.strip()
+            or os.path.basename(document_id) != document_id
+            or document_id in {".", ".."}
+        ):
+            raise ValueError("非法 topic document ID")
+        return os.path.join(self.memory_documents_dir, f"{document_id}.md")
+
+    def load_memory_current(self) -> str:
+        """读取 CURRENT；尚未产生 memory observation 时返回空字符串。"""
+
+        if not os.path.isfile(self.memory_current_path):
+            return ""
+        with open(self.memory_current_path, encoding="utf-8") as handle:
+            return handle.read()
+
+    def append_memory_current(self, observations: list[dict[str, Any]]) -> None:
+        """追加已经完成全局 index 校准的 observations。"""
+
+        if not observations:
+            return
+        os.makedirs(self.memory_dir, exist_ok=True)
+        blocks: list[str] = []
+        for observation in observations:
+            content = observation.get("content")
+            indexes = observation.get("indexes")
+            evidence = observation.get("evidence", "")
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError("memory observation content 不能为空")
+            if not isinstance(indexes, list) or not indexes:
+                raise ValueError("memory observation indexes 必须是非空 list")
+            rendered_indexes: list[str] = []
+            for item in indexes:
+                if isinstance(item, GlobalSegmentIndex):
+                    index = item
+                elif (
+                    isinstance(item, (list, tuple))
+                    and len(item) == 2
+                ):
+                    index = GlobalSegmentIndex(int(item[0]), int(item[1]))
+                else:
+                    raise TypeError("memory index 必须是 GlobalSegmentIndex 或二元位置")
+                rendered_indexes.append(
+                    f"  - chapter={index.chapter}, segment={index.segment}"
+                )
+            block = ["## Observation", "", content.strip(), "", "indexes:"]
+            block.extend(rendered_indexes)
+            if evidence:
+                if not isinstance(evidence, str):
+                    raise TypeError("memory observation evidence 必须是字符串")
+                block.extend(["", "evidence:", evidence.strip()])
+            blocks.append("\n".join(block))
+        with open(self.memory_current_path, "a", encoding="utf-8") as handle:
+            if os.path.getsize(self.memory_current_path) > 0:
+                handle.write("\n\n")
+            handle.write("\n\n".join(blocks))
+            handle.write("\n")
+
+    def list_memory_documents(self) -> list[TopicDocument]:
+        """返回 memory catalog，只加载 topic document 的 metadata。"""
+
+        if not os.path.isdir(self.memory_documents_dir):
+            return []
+        documents: list[TopicDocument] = []
+        for name in sorted(os.listdir(self.memory_documents_dir)):
+            if not name.endswith(".md"):
+                continue
+            document_id = name[:-3]
+            path = self._memory_document_path(document_id)
+            with open(path, encoding="utf-8") as handle:
+                document = parse_topic_document(handle.read(), document_id=document_id)
+            documents.append(TopicDocument(document.document_id, document.summary))
+        return documents
+
+    def read_memory_document(self, document_id: str) -> TopicDocument:
+        """读取一个 topic document 的完整结构化 Markdown。"""
+
+        path = self._memory_document_path(document_id)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"topic document 不存在：{document_id}")
+        with open(path, encoding="utf-8") as handle:
+            return parse_topic_document(handle.read(), document_id=document_id)
+
+    def commit_memory_task(self, writes: list[TopicDocument]) -> list[str]:
+        """提交 memory task 的完整 document 版本，并清空 CURRENT。"""
+
+        os.makedirs(self.memory_documents_dir, exist_ok=True)
+        committed_ids: list[str] = []
+        for document in writes:
+            if document.content is None:
+                raise ValueError("memory write 缺少 content")
+            document_id = document.document_id
+            if document_id is None:
+                document_id = f"memory-{uuid4().hex}"
+            path = self._memory_document_path(document_id)
+            stored = TopicDocument(document_id, document.summary, document.content)
+            self._write_text(path, render_topic_document(stored))
+            committed_ids.append(document_id)
+        # Memory task 成功结束即消费 CURRENT；即使 agent 判断本轮没有值得
+        # 持久化的内容，也不能让同一批 observation 在下一章重复处理。
+        self._write_text(self.memory_current_path, "")
+        return committed_ids
+
+    @staticmethod
+    def _write_text(path: str, content: str) -> None:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        temp_path = path + ".tmp"
+        with open(temp_path, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        os.replace(temp_path, path)
 
     def chapter_path(self, index: int) -> str:
         return os.path.join(self.chapters_dir, f"ch{index}.json")
@@ -269,6 +388,7 @@ class StateStore:
         trace_id: str | None = None,
         consistency_updates: list[dict[str, Any]] | None = None,
         consistency_writes: list[dict[str, Any]] | None = None,
+        memory_observations: list[dict[str, Any]] | None = None,
     ) -> None:
         """校验源文未变化后提交一个 batch，再记录事件和进度。"""
 
@@ -346,6 +466,8 @@ class StateStore:
         self.save_manifest(manifest)
         if consistency_updates or consistency_writes:
             self.save_consistency(consistency_records)
+        if memory_observations:
+            self.append_memory_current(memory_observations)
         target_digest = hashlib.sha256("\n".join(targets).encode()).hexdigest()
         event_data: dict[str, Any] = {
             "task_id": task_id,
@@ -360,6 +482,8 @@ class StateStore:
         }
         if consistency_log["writes"] or consistency_log["updates"]:
             event_data["consistency"] = consistency_log
+        if memory_observations:
+            event_data["memory_observations"] = len(memory_observations)
         self.log_event("batch_committed", **event_data)
 
 

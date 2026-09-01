@@ -83,6 +83,37 @@ class TranslationToolBox:
         {
             "type": "function",
             "function": {
+                "name": "write_memory_buffer",
+                "description": (
+                    "暂存值得长期保存的文本 observation。indexes 使用当前 batch 内从 1 开始的"
+                    " segment 编号；同一条 observation 可以提供多个编号。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "observations": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "content": {"type": "string"},
+                                    "indexes": {
+                                        "type": "array",
+                                        "items": {"type": "integer", "minimum": 1},
+                                    },
+                                    "evidence": {"type": "string"},
+                                },
+                                "required": ["content", "indexes"],
+                            },
+                        }
+                    },
+                    "required": ["observations"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "submit_translation",
                 "description": "提交当前完整译文草稿。只有提交成功后翻译任务才算完成。",
                 "parameters": {
@@ -98,7 +129,14 @@ class TranslationToolBox:
         task_input: TranslationTaskInput,
         *,
         existing_sources: set[str] | None = None,
+        enable_memory: bool = False,
     ) -> None:
+        if not enable_memory:
+            self.definitions = [
+                item
+                for item in self.definitions
+                if item["function"]["name"] != "write_memory_buffer"
+            ]
         self._task_input = task_input
         self._existing_sources = (
             existing_sources
@@ -110,9 +148,11 @@ class TranslationToolBox:
         )
         self._draft: list[str] | None = None
         self._candidates: dict[str, dict[str, str]] = {}
+        self._memory_observations: list[dict[str, Any]] = []
         self._handlers: dict[str, Callable[..., ToolResult]] = {
             "save_draft": self.save_draft,
             "record_consistency": self.record_consistency,
+            "write_memory_buffer": self.write_memory_buffer,
             "submit_translation": self.submit_translation,
         }
 
@@ -161,13 +201,13 @@ class TranslationToolBox:
             raise ValueError("还没有草稿，请先保存草稿")
         targets = list(self._draft)
         validate_translation_output(self._task_input, targets)
-        return ToolResult(
-            message="翻译已提交",
-            output={
-                "targets": targets,
-                "consistency_candidates": list(self._candidates.values()),
-            },
-        )
+        output: dict[str, Any] = {
+            "targets": targets,
+            "consistency_candidates": list(self._candidates.values()),
+        }
+        if self._memory_observations:
+            output["memory_observations"] = list(self._memory_observations)
+        return ToolResult(message="翻译已提交", output=output)
 
     def record_consistency(
         self,
@@ -208,3 +248,42 @@ class TranslationToolBox:
         for source_key, source, target in validated:
             self._candidates[source_key] = {"source": source, "target": target}
         return ToolResult(message=f"已暂存 {len(validated)} 条 consistency candidate")
+
+    def write_memory_buffer(
+        self,
+        observations: list[dict[str, Any]],
+    ) -> ToolResult:
+        """暂存本 batch 的 memory observations，不写入 State。"""
+
+        if not isinstance(observations, list) or not observations:
+            raise ValueError("observations 必须是非空 list")
+        validated: list[dict[str, Any]] = []
+        for observation in observations:
+            if not isinstance(observation, dict):
+                raise TypeError("每个 memory observation 必须是 dict")
+            content = observation.get("content")
+            indexes = observation.get("indexes")
+            evidence = observation.get("evidence", "")
+            if not isinstance(content, str) or not content.strip():
+                raise ValueError("memory observation content 不能为空")
+            if not isinstance(indexes, list) or not indexes:
+                raise ValueError("memory observation indexes 必须是非空 list")
+            normalized_indexes: list[int] = []
+            for index in indexes:
+                if isinstance(index, bool) or not isinstance(index, int):
+                    raise TypeError("memory observation index 必须是整数")
+                if index < 1 or index > len(self._task_input.sources):
+                    raise ValueError("memory observation index 超出当前 batch 范围")
+                if index not in normalized_indexes:
+                    normalized_indexes.append(index)
+            if evidence and not isinstance(evidence, str):
+                raise TypeError("memory observation evidence 必须是字符串")
+            validated.append(
+                {
+                    "content": content.strip(),
+                    "indexes": normalized_indexes,
+                    "evidence": evidence.strip() if isinstance(evidence, str) else "",
+                }
+            )
+        self._memory_observations.extend(validated)
+        return ToolResult(message=f"已暂存 {len(validated)} 条 memory observation")

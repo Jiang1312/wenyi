@@ -7,6 +7,7 @@ from .state_reader import (
     local_to_global_positions,
     read_batches,
     read_context,
+    read_indexed_context,
     read_state_data,
 )
 from .task import TaskInput, TaskOutput, TaskRunner
@@ -24,5 +25,6 @@ __all__ = [
     "local_to_global_positions",
     "read_batches",
     "read_context",
+    "read_indexed_context",
     "read_state_data",
 ]

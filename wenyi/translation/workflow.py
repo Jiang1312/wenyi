@@ -76,6 +76,7 @@ class TranslationWorkflow:
             tool_factory=lambda: TranslationToolBox(
                 task_input,
                 existing_sources=existing_consistency_sources,
+                enable_memory=True,
             ),
             trace_writer=trace_writer,
             trace_id=trace_id,
